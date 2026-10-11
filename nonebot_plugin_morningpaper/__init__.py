@@ -85,6 +85,10 @@ def _as_list(name: str, default: list[Any]) -> list[Any]:
     return default
 
 
+def _clean_title(value: str | None) -> str:
+    return html.unescape(html.unescape(value or "")).strip()
+
+
 GROUPS = [int(group_id) for group_id in _as_list("morningpaper_groups", [])]
 HOUR = _as_int("morningpaper_hour", 8)
 MINUTE = _as_int("morningpaper_minute", 30)
@@ -116,7 +120,7 @@ async def fetch_gcores(client: httpx.AsyncClient, limit: int) -> SourceResult:
         root = ET.fromstring(response.text)
         items: list[HotItem] = []
         for item in root.findall("./channel/item")[:limit]:
-            title = html.unescape(item.findtext("title") or "").strip()
+            title = _clean_title(item.findtext("title"))
             if title:
                 items.append(HotItem(title=title))
         return SourceResult("机核", items)
@@ -135,7 +139,7 @@ async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
         raw_items = content[0].get("content", []) if content else []
         items: list[HotItem] = []
         for raw in raw_items:
-            title = str(raw.get("word") or raw.get("query") or "").strip()
+            title = _clean_title(str(raw.get("word") or raw.get("query") or ""))
             if not title:
                 continue
             url = html.unescape(str(raw.get("url") or "").strip()) or f"https://www.baidu.com/s?wd={quote(title)}"
@@ -163,7 +167,7 @@ async def fetch_tieba(client: httpx.AsyncClient, limit: int) -> SourceResult:
             response.text,
             flags=re.S,
         ):
-            title = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+            title = _clean_title(re.sub(r"<[^>]+>", "", raw_title))
             if title:
                 items.append(HotItem(title=title))
             if len(items) >= limit:
@@ -180,7 +184,7 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
         root = ET.fromstring(response.text)
         items: list[HotItem] = []
         for item in root.findall("./channel/item")[:limit]:
-            title = html.unescape(item.findtext("title") or "").strip()
+            title = _clean_title(item.findtext("title"))
             url = (item.findtext("link") or "").strip() or None
             if title:
                 items.append(HotItem(title=title, url=url))
