@@ -25,7 +25,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送机核、百度、贴吧、IT之家热点摘要。",
+    description="群聊早报，定时推送百度、贴吧、IT之家热点摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -101,7 +101,7 @@ MINUTE = _as_int("morningpaper_minute", 30)
 TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["gcores", "baidu", "tieba", "ithome"])
+    for source in _as_list("morningpaper_sources", ["baidu", "tieba", "ithome"])
 ]
 
 HEADERS = {
@@ -117,21 +117,6 @@ async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
     response = await client.get(url, timeout=10, follow_redirects=True, **kwargs)
     response.raise_for_status()
     return response.json()
-
-
-async def fetch_gcores(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    try:
-        response = await client.get("https://www.gcores.com/rss", headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        root = ET.fromstring(response.text)
-        items: list[HotItem] = []
-        for item in root.findall("./channel/item")[:limit]:
-            title = _clean_title(item.findtext("title"))
-            if title:
-                items.append(HotItem(title=title))
-        return SourceResult("机核", items)
-    except Exception as exc:
-        return SourceResult("机核", [], f"{type(exc).__name__}: {exc}")
 
 
 async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
@@ -201,7 +186,6 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
 
 async def collect_sources() -> list[SourceResult]:
     fetchers = {
-        "gcores": fetch_gcores,
         "baidu": fetch_baidu,
         "tieba": fetch_tieba,
         "ithome": fetch_ithome,
