@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from nonebot import get_bot, get_driver, on_regex, require
@@ -22,7 +24,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送知乎、B站、IT之家热点摘要。",
+    description="群聊早报，定时推送微博、百度、IT之家热点摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -88,9 +90,8 @@ MINUTE = _as_int("morningpaper_minute", 30)
 TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["zhihu", "bilibili", "ithome"])
+    for source in _as_list("morningpaper_sources", ["weibo", "baidu", "ithome"])
 ]
-ZHIHU_API_URL = str(_get_config("morningpaper_zhihu_api_url", "") or "").strip()
 
 HEADERS = {
     "User-Agent": (
@@ -107,83 +108,52 @@ async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
     return response.json()
 
 
-def _pick_text(data: dict[str, Any], keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        value = data.get(key)
-        if value:
-            return str(value).strip()
-    return None
-
-
-def _parse_generic_hot_json(payload: Any, limit: int) -> list[HotItem]:
-    if isinstance(payload, dict):
-        raw_items = payload.get("data") or payload.get("list") or payload.get("items") or []
-    else:
-        raw_items = payload
-    if isinstance(raw_items, dict):
-        raw_items = raw_items.get("data") or raw_items.get("list") or []
-    if not isinstance(raw_items, list):
-        return []
-
-    items: list[HotItem] = []
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-        target = raw.get("target") if isinstance(raw.get("target"), dict) else raw
-        title = _pick_text(target, ("title", "name", "keyword", "query"))
-        if not title:
-            continue
-        url = _pick_text(target, ("url", "link", "mobileUrl", "mobile_url"))
-        extra = _pick_text(raw, ("detail_text", "hot", "desc", "excerpt"))
-        items.append(HotItem(title=title, url=url, extra=extra))
-        if len(items) >= limit:
-            break
-    return items
-
-
-async def fetch_zhihu(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    urls = []
-    if ZHIHU_API_URL:
-        urls.append(ZHIHU_API_URL)
-    urls.append(
-        f"https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit={limit}&desktop=true"
-    )
-
-    last_error = "知乎接口不可用"
-    for url in urls:
-        try:
-            payload = await _get_json(
-                client,
-                url,
-                headers={**HEADERS, "Referer": "https://www.zhihu.com/hot"},
-            )
-            items = _parse_generic_hot_json(payload, limit)
-            if items:
-                return SourceResult("知乎", items)
-            last_error = "没有解析到热榜条目"
-        except httpx.HTTPStatusError as exc:
-            last_error = f"HTTP {exc.response.status_code}"
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-    return SourceResult("知乎", [], last_error)
-
-
-async def fetch_bilibili(client: httpx.AsyncClient, limit: int) -> SourceResult:
+async def fetch_weibo(client: httpx.AsyncClient, limit: int) -> SourceResult:
     try:
         payload = await _get_json(
             client,
-            "https://s.search.bilibili.com/main/hotword",
-            headers={**HEADERS, "Referer": "https://www.bilibili.com/"},
+            "https://weibo.com/ajax/side/hotSearch",
+            headers={**HEADERS, "Referer": "https://weibo.com/"},
         )
         items: list[HotItem] = []
-        for raw in payload.get("list", [])[:limit]:
-            title = str(raw.get("show_name") or raw.get("keyword") or "").strip()
+        raw_items = payload.get("data", {}).get("realtime", [])
+        for raw in raw_items:
+            title = str(raw.get("note") or raw.get("word") or "").strip()
             if not title:
                 continue
-            items.append(HotItem(title=title))
-        return SourceResult("B站", items)
+            topic = title.strip("#")
+            url = f"https://s.weibo.com/weibo?q=%23{quote(topic)}%23"
+            extra = str(raw.get("num") or raw.get("raw_hot") or "").strip() or None
+            items.append(HotItem(title=title, url=url, extra=extra))
+            if len(items) >= limit:
+                break
+        return SourceResult("微博", items)
     except Exception as exc:
-        return SourceResult("B站", [], f"{type(exc).__name__}: {exc}")
+        return SourceResult("微博", [], f"{type(exc).__name__}: {exc}")
+
+
+async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
+    try:
+        payload = await _get_json(
+            client,
+            "https://top.baidu.com/api/board?platform=wise&tab=realtime",
+            headers={**HEADERS, "Referer": "https://top.baidu.com/board?tab=realtime"},
+        )
+        content = payload.get("data", {}).get("cards", [{}])[0].get("content", [])
+        raw_items = content[0].get("content", []) if content else []
+        items: list[HotItem] = []
+        for raw in raw_items:
+            title = str(raw.get("word") or raw.get("query") or "").strip()
+            if not title:
+                continue
+            url = html.unescape(str(raw.get("url") or "").strip()) or f"https://www.baidu.com/s?wd={quote(title)}"
+            extra = str(raw.get("hotScore") or raw.get("score") or "").strip() or None
+            items.append(HotItem(title=title, url=url, extra=extra))
+            if len(items) >= limit:
+                break
+        return SourceResult("百度", items)
+    except Exception as exc:
+        return SourceResult("百度", [], f"{type(exc).__name__}: {exc}")
 
 
 async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
@@ -204,8 +174,8 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
 
 async def collect_sources() -> list[SourceResult]:
     fetchers = {
-        "zhihu": fetch_zhihu,
-        "bilibili": fetch_bilibili,
+        "weibo": fetch_weibo,
+        "baidu": fetch_baidu,
         "ithome": fetch_ithome,
     }
     async with httpx.AsyncClient() as client:
