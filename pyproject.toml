@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nonebot-plugin-morningpaper"
+version = "0.1.0"
+description = "NoneBot2 群聊早报插件，定时推送知乎、B站、IT之家热点摘要。"
+readme = "README.md"
+requires-python = ">=3.9,<4.0"
+license = "MIT"
+authors = [
+    { name = "PeachCoda" }
+]
+keywords = ["nonebot", "nonebot2", "qqbot", "morningpaper", "hotlist"]
+dependencies = [
+    "nonebot2>=2.3.0,<3.0.0",
+    "nonebot-adapter-onebot>=2.4.0,<3.0.0",
+    "nonebot-plugin-apscheduler>=0.5.0,<1.0.0",
+    "httpx>=0.25.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/PeachCoda/nonebot-plugin-morningpaper"
+Repository = "https://github.com/PeachCoda/nonebot-plugin-morningpaper"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nonebot_plugin_morningpaper"]
