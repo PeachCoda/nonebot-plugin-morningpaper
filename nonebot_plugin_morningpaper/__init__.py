@@ -25,7 +25,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送微博、百度、贴吧、IT之家热点摘要。",
+    description="群聊早报，定时推送小黑盒、百度、贴吧、IT之家热点摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -91,7 +91,7 @@ MINUTE = _as_int("morningpaper_minute", 30)
 TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["weibo", "baidu", "tieba", "ithome"])
+    for source in _as_list("morningpaper_sources", ["heybox", "baidu", "tieba", "ithome"])
 ]
 
 HEADERS = {
@@ -109,28 +109,43 @@ async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
     return response.json()
 
 
-async def fetch_weibo(client: httpx.AsyncClient, limit: int) -> SourceResult:
+async def fetch_heybox(client: httpx.AsyncClient, limit: int) -> SourceResult:
     try:
         payload = await _get_json(
             client,
-            "https://weibo.com/ajax/side/hotSearch",
-            headers={**HEADERS, "Referer": "https://weibo.com/"},
+            "https://api.xiaoheihe.cn/maxnews/app/list",
+            params={
+                "tag": -1,
+                "offset": 0,
+                "limit": limit,
+                "rec_mark": "timeline",
+                "os_type": "Android",
+                "os_version": "8.1.0",
+                "version": "1.3.331",
+            },
+            headers={
+                **HEADERS,
+                "Referer": "https://www.xiaoheihe.cn/",
+                "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 ApiMaxJia/1.0",
+            },
         )
+        if payload.get("status") == "failed":
+            message = str(payload.get("msg") or "接口不可用")
+            if "hkey" in message.lower():
+                message = "接口需要签名，暂不可用"
+            return SourceResult("小黑盒", [], message)
         items: list[HotItem] = []
-        raw_items = payload.get("data", {}).get("realtime", [])
+        raw_items = payload.get("result", {}).get("list", [])
         for raw in raw_items:
-            title = str(raw.get("note") or raw.get("word") or "").strip()
+            title = str(raw.get("title") or raw.get("content") or raw.get("brief") or "").strip()
             if not title:
                 continue
-            topic = title.strip("#")
-            url = f"https://s.weibo.com/weibo?q=%23{quote(topic)}%23"
-            extra = str(raw.get("num") or raw.get("raw_hot") or "").strip() or None
-            items.append(HotItem(title=title, url=url, extra=extra))
+            items.append(HotItem(title=title))
             if len(items) >= limit:
                 break
-        return SourceResult("微博", items)
+        return SourceResult("小黑盒", items)
     except Exception as exc:
-        return SourceResult("微博", [], f"{type(exc).__name__}: {exc}")
+        return SourceResult("小黑盒", [], f"{type(exc).__name__}: {exc}")
 
 
 async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
@@ -200,7 +215,7 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
 
 async def collect_sources() -> list[SourceResult]:
     fetchers = {
-        "weibo": fetch_weibo,
+        "heybox": fetch_heybox,
         "baidu": fetch_baidu,
         "tieba": fetch_tieba,
         "ithome": fetch_ithome,
