@@ -155,7 +155,8 @@ async def fetch_zhihu(client: httpx.AsyncClient, limit: int) -> SourceResult:
             headers={
                 **HEADERS,
                 "Authorization": f"Bearer {ZHIHU_ACCESS_SECRET}",
-                "X-Zse-Time": str(int(time.time())),
+                "X-Request-Timestamp": str(int(time.time())),
+                "Content-Type": "application/json",
             },
         )
         data = payload.get("Data")
