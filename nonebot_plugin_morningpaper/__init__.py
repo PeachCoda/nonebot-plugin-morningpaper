@@ -6,7 +6,6 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 from nonebot import get_bot, get_driver, on_regex, require
@@ -162,6 +161,8 @@ async def fetch_zhihu(client: httpx.AsyncClient, limit: int) -> SourceResult:
             if items:
                 return SourceResult("知乎", items)
             last_error = "没有解析到热榜条目"
+        except httpx.HTTPStatusError as exc:
+            last_error = f"HTTP {exc.response.status_code}"
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
     return SourceResult("知乎", [], last_error)
@@ -177,11 +178,9 @@ async def fetch_bilibili(client: httpx.AsyncClient, limit: int) -> SourceResult:
         items: list[HotItem] = []
         for raw in payload.get("list", [])[:limit]:
             title = str(raw.get("show_name") or raw.get("keyword") or "").strip()
-            keyword = str(raw.get("keyword") or title).strip()
             if not title:
                 continue
-            url = f"https://search.bilibili.com/all?keyword={quote(keyword)}"
-            items.append(HotItem(title=title, url=url))
+            items.append(HotItem(title=title))
         return SourceResult("B站", items)
     except Exception as exc:
         return SourceResult("B站", [], f"{type(exc).__name__}: {exc}")
