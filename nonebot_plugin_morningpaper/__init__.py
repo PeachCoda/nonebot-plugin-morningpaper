@@ -86,7 +86,13 @@ def _as_list(name: str, default: list[Any]) -> list[Any]:
 
 
 def _clean_title(value: str | None) -> str:
-    return html.unescape(html.unescape(value or "")).strip()
+    title = value or ""
+    for _ in range(5):
+        decoded = html.unescape(title)
+        if decoded == title:
+            break
+        title = decoded
+    return title.strip()
 
 
 GROUPS = [int(group_id) for group_id in _as_list("morningpaper_groups", [])]
