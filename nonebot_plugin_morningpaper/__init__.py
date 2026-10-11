@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,7 +25,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送微博、百度、IT之家热点摘要。",
+    description="群聊早报，定时推送微博、百度、贴吧、IT之家热点摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -90,7 +91,7 @@ MINUTE = _as_int("morningpaper_minute", 30)
 TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["weibo", "baidu", "ithome"])
+    for source in _as_list("morningpaper_sources", ["weibo", "baidu", "tieba", "ithome"])
 ]
 
 HEADERS = {
@@ -156,6 +157,31 @@ async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
         return SourceResult("百度", [], f"{type(exc).__name__}: {exc}")
 
 
+async def fetch_tieba(client: httpx.AsyncClient, limit: int) -> SourceResult:
+    try:
+        response = await client.get(
+            "http://tieba.baidu.com/hottopic/browse/topicList?res_type=1",
+            headers={**HEADERS, "Referer": "http://tieba.baidu.com/"},
+            timeout=8,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        items: list[HotItem] = []
+        for raw_title in re.findall(
+            r'<a[^>]+class="[^"]*topic[^"]*"[^>]*>(.*?)</a>',
+            response.text,
+            flags=re.S,
+        ):
+            title = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+            if title:
+                items.append(HotItem(title=title))
+            if len(items) >= limit:
+                break
+        return SourceResult("贴吧", items)
+    except Exception as exc:
+        return SourceResult("贴吧", [], f"{type(exc).__name__}: {exc}")
+
+
 async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
     try:
         response = await client.get("https://www.ithome.com/rss/", headers=HEADERS, timeout=10)
@@ -176,6 +202,7 @@ async def collect_sources() -> list[SourceResult]:
     fetchers = {
         "weibo": fetch_weibo,
         "baidu": fetch_baidu,
+        "tieba": fetch_tieba,
         "ithome": fetch_ithome,
     }
     async with httpx.AsyncClient() as client:
@@ -199,8 +226,6 @@ def format_digest(results: list[SourceResult]) -> Message:
                 line = f"{index}. {item.title}"
                 if item.extra:
                     line += f" ({item.extra})"
-                if item.url:
-                    line += f"\n   {item.url}"
                 lines.append(line)
         else:
             lines.append(f"暂不可用：{result.error or '未知错误'}")
