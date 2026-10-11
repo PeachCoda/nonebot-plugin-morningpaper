@@ -137,6 +137,33 @@ HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9",
 }
 
+AI_KEYWORDS = (
+    "AI",
+    "AIGC",
+    "Agent",
+    "Agents",
+    "LLM",
+    "OpenAI",
+    "Claude",
+    "Anthropic",
+    "DeepSeek",
+    "大模型",
+    "模型",
+    "智能体",
+    "人工智能",
+    "机器学习",
+    "深度学习",
+    "强化学习",
+    "生成式",
+    "多模态",
+    "推理",
+    "训练",
+    "RAG",
+    "向量",
+    "GPU",
+    "英伟达",
+)
+
 
 async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
     response = await client.get(url, timeout=10, follow_redirects=True, **kwargs)
@@ -263,14 +290,20 @@ async def fetch_infoq(client: httpx.AsyncClient, limit: int) -> SourceResult:
         response.raise_for_status()
         root = ET.fromstring(response.text)
         items: list[HotItem] = []
-        for item in root.findall("./channel/item")[:limit]:
+        for item in root.findall("./channel/item"):
             title = _clean_title(item.findtext("title"))
+            description = _clean_title(re.sub(r"<[^>]+>", "", item.findtext("description") or ""))
+            text = f"{title}\n{description}"
+            if not any(keyword.lower() in text.lower() for keyword in AI_KEYWORDS):
+                continue
             url = (item.findtext("link") or "").strip() or None
             if title:
                 items.append(HotItem(title=title, url=url))
-        return SourceResult("InfoQ", items)
+            if len(items) >= limit:
+                break
+        return SourceResult("AI前沿", items)
     except Exception as exc:
-        return SourceResult("InfoQ", [], f"{type(exc).__name__}: {exc}")
+        return SourceResult("AI前沿", [], f"{type(exc).__name__}: {exc}")
 
 
 async def collect_sources() -> list[SourceResult]:

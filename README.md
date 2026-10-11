@@ -22,6 +22,7 @@ APSCHEDULER_CONFIG='{"apscheduler.timezone":"Asia/Shanghai"}'
 ```
 
 `MORNINGPAPER_SOURCES` 可选：`zhihu`、`baidu`、`tieba`、`ithome`、`infoq`。
+`infoq` 会筛选 InfoQ 中文站的 AI 相关内容。
 启用 `zhihu` 需要配置知乎开放平台 Access Secret。
 
 ## 安装
