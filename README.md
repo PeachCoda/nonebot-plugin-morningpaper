@@ -1,6 +1,6 @@
 # nonebot-plugin-morningpaper
 
-NoneBot2 群聊早报插件，定时推送百度、贴吧、IT之家热点摘要。
+NoneBot2 群聊早报插件，定时推送知乎、百度、贴吧、IT之家、InfoQ 热点摘要。
 
 ## 功能
 
@@ -17,8 +17,12 @@ MORNINGPAPER_HOUR=8
 MORNINGPAPER_MINUTE=30
 MORNINGPAPER_TOP_N=5
 MORNINGPAPER_SOURCES=["baidu","tieba","ithome"]
+MORNINGPAPER_ZHIHU_ACCESS_SECRET=
 APSCHEDULER_CONFIG='{"apscheduler.timezone":"Asia/Shanghai"}'
 ```
+
+`MORNINGPAPER_SOURCES` 可选：`zhihu`、`baidu`、`tieba`、`ithome`、`infoq`。
+启用 `zhihu` 需要配置知乎开放平台 Access Secret。
 
 ## 安装
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nonebot-plugin-morningpaper"
 version = "0.1.0"
-description = "NoneBot2 群聊早报插件，定时推送百度、贴吧、IT之家热点摘要。"
+description = "NoneBot2 群聊早报插件，定时推送知乎、百度、贴吧、IT之家、InfoQ 热点摘要。"
 readme = "README.md"
 requires-python = ">=3.9,<4.0"
 license = "MIT"

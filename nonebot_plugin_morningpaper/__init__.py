@@ -4,6 +4,7 @@ import asyncio
 import html
 import json
 import re
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,7 +26,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送百度、贴吧、IT之家热点摘要。",
+    description="群聊早报，定时推送知乎、百度、贴吧、IT之家、InfoQ 热点摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -95,6 +96,29 @@ def _clean_title(value: str | None) -> str:
     return title.strip()
 
 
+def _first_text(raw: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = _clean_title(str(value))
+        if text:
+            return text
+    return ""
+
+
+def _list_from_payload(data: Any) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in ("List", "list", "Items", "items", "Data", "data"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 GROUPS = [int(group_id) for group_id in _as_list("morningpaper_groups", [])]
 HOUR = _as_int("morningpaper_hour", 8)
 MINUTE = _as_int("morningpaper_minute", 30)
@@ -103,6 +127,7 @@ SOURCES = [
     str(source).lower()
     for source in _as_list("morningpaper_sources", ["baidu", "tieba", "ithome"])
 ]
+ZHIHU_ACCESS_SECRET = str(_get_config("morningpaper_zhihu_access_secret", "")).strip()
 
 HEADERS = {
     "User-Agent": (
@@ -117,6 +142,53 @@ async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
     response = await client.get(url, timeout=10, follow_redirects=True, **kwargs)
     response.raise_for_status()
     return response.json()
+
+
+async def fetch_zhihu(client: httpx.AsyncClient, limit: int) -> SourceResult:
+    if not ZHIHU_ACCESS_SECRET:
+        return SourceResult("知乎", [], "MORNINGPAPER_ZHIHU_ACCESS_SECRET 未配置")
+    try:
+        payload = await _get_json(
+            client,
+            "https://developer.zhihu.com/api/v1/content/hot_list",
+            params={"Limit": limit, "Offset": 0},
+            headers={
+                **HEADERS,
+                "Authorization": f"Bearer {ZHIHU_ACCESS_SECRET}",
+                "X-Zse-Time": str(int(time.time())),
+            },
+        )
+        data = payload.get("Data")
+        raw_items = _list_from_payload(data)
+        if not raw_items:
+            return SourceResult("知乎", [], str(payload.get("Message") or "接口未返回热榜数据"))
+        items: list[HotItem] = []
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            title = _first_text(
+                raw,
+                (
+                    "Title",
+                    "title",
+                    "QuestionTitle",
+                    "question_title",
+                    "Name",
+                    "name",
+                    "Excerpt",
+                    "excerpt",
+                ),
+            )
+            if not title:
+                continue
+            extra = _first_text(raw, ("HotValue", "hot_value", "Score", "score", "Metrics", "metrics")) or None
+            url = _first_text(raw, ("Url", "url", "Link", "link"))
+            items.append(HotItem(title=title, url=url or None, extra=extra))
+            if len(items) >= limit:
+                break
+        return SourceResult("知乎", items)
+    except Exception as exc:
+        return SourceResult("知乎", [], f"{type(exc).__name__}: {exc}")
 
 
 async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
@@ -184,11 +256,29 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
         return SourceResult("IT之家", [], f"{type(exc).__name__}: {exc}")
 
 
+async def fetch_infoq(client: httpx.AsyncClient, limit: int) -> SourceResult:
+    try:
+        response = await client.get("https://www.infoq.cn/feed", headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
+        items: list[HotItem] = []
+        for item in root.findall("./channel/item")[:limit]:
+            title = _clean_title(item.findtext("title"))
+            url = (item.findtext("link") or "").strip() or None
+            if title:
+                items.append(HotItem(title=title, url=url))
+        return SourceResult("InfoQ", items)
+    except Exception as exc:
+        return SourceResult("InfoQ", [], f"{type(exc).__name__}: {exc}")
+
+
 async def collect_sources() -> list[SourceResult]:
     fetchers = {
+        "zhihu": fetch_zhihu,
         "baidu": fetch_baidu,
         "tieba": fetch_tieba,
         "ithome": fetch_ithome,
+        "infoq": fetch_infoq,
     }
     async with httpx.AsyncClient() as client:
         tasks = [
