@@ -25,7 +25,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送小黑盒、百度、贴吧、IT之家热点摘要。",
+    description="群聊早报，定时推送机核、百度、贴吧、IT之家热点摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -91,7 +91,7 @@ MINUTE = _as_int("morningpaper_minute", 30)
 TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["heybox", "baidu", "tieba", "ithome"])
+    for source in _as_list("morningpaper_sources", ["gcores", "baidu", "tieba", "ithome"])
 ]
 
 HEADERS = {
@@ -109,43 +109,19 @@ async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
     return response.json()
 
 
-async def fetch_heybox(client: httpx.AsyncClient, limit: int) -> SourceResult:
+async def fetch_gcores(client: httpx.AsyncClient, limit: int) -> SourceResult:
     try:
-        payload = await _get_json(
-            client,
-            "https://api.xiaoheihe.cn/maxnews/app/list",
-            params={
-                "tag": -1,
-                "offset": 0,
-                "limit": limit,
-                "rec_mark": "timeline",
-                "os_type": "Android",
-                "os_version": "8.1.0",
-                "version": "1.3.331",
-            },
-            headers={
-                **HEADERS,
-                "Referer": "https://www.xiaoheihe.cn/",
-                "User-Agent": "Mozilla/5.0 AppleWebKit/537.36 ApiMaxJia/1.0",
-            },
-        )
-        if payload.get("status") == "failed":
-            message = str(payload.get("msg") or "接口不可用")
-            if "hkey" in message.lower():
-                message = "接口需要签名，暂不可用"
-            return SourceResult("小黑盒", [], message)
+        response = await client.get("https://www.gcores.com/rss", headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
         items: list[HotItem] = []
-        raw_items = payload.get("result", {}).get("list", [])
-        for raw in raw_items:
-            title = str(raw.get("title") or raw.get("content") or raw.get("brief") or "").strip()
-            if not title:
-                continue
-            items.append(HotItem(title=title))
-            if len(items) >= limit:
-                break
-        return SourceResult("小黑盒", items)
+        for item in root.findall("./channel/item")[:limit]:
+            title = html.unescape(item.findtext("title") or "").strip()
+            if title:
+                items.append(HotItem(title=title))
+        return SourceResult("机核", items)
     except Exception as exc:
-        return SourceResult("小黑盒", [], f"{type(exc).__name__}: {exc}")
+        return SourceResult("机核", [], f"{type(exc).__name__}: {exc}")
 
 
 async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
@@ -204,7 +180,7 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
         root = ET.fromstring(response.text)
         items: list[HotItem] = []
         for item in root.findall("./channel/item")[:limit]:
-            title = (item.findtext("title") or "").strip()
+            title = html.unescape(item.findtext("title") or "").strip()
             url = (item.findtext("link") or "").strip() or None
             if title:
                 items.append(HotItem(title=title, url=url))
@@ -215,7 +191,7 @@ async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
 
 async def collect_sources() -> list[SourceResult]:
     fetchers = {
-        "heybox": fetch_heybox,
+        "gcores": fetch_gcores,
         "baidu": fetch_baidu,
         "tieba": fetch_tieba,
         "ithome": fetch_ithome,

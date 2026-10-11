@@ -1,6 +1,6 @@
 # nonebot-plugin-morningpaper
 
-NoneBot2 群聊早报插件，定时推送小黑盒、百度、贴吧、IT之家热点摘要。
+NoneBot2 群聊早报插件，定时推送机核、百度、贴吧、IT之家热点摘要。
 
 ## 功能
 
@@ -16,7 +16,7 @@ MORNINGPAPER_GROUPS=[142979214]
 MORNINGPAPER_HOUR=8
 MORNINGPAPER_MINUTE=30
 MORNINGPAPER_TOP_N=5
-MORNINGPAPER_SOURCES=["heybox","baidu","tieba","ithome"]
+MORNINGPAPER_SOURCES=["gcores","baidu","tieba","ithome"]
 APSCHEDULER_CONFIG='{"apscheduler.timezone":"Asia/Shanghai"}'
 ```
 
