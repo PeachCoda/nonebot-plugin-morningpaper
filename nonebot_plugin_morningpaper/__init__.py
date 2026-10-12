@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from nonebot import get_bot, get_driver, on_regex, require
@@ -24,7 +25,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送联合早报和 AI 前沿 RSS 摘要。",
+    description="群聊早报，定时推送百度热榜和 AI 前沿摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -66,9 +67,26 @@ def _as_int(name: str, default: int) -> int:
         return default
 
 
+def _as_bool(name: str, default: bool) -> bool:
+    value = _get_config(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return bool(value)
+
+
 def _as_list(name: str, default: list[Any]) -> list[Any]:
     value = _get_config(name, default)
     if isinstance(value, list):
+        if any(isinstance(item, str) and ("[" in item or "]" in item) for item in value):
+            joined = ",".join(str(item) for item in value).strip()
+            joined = joined.strip("[]")
+            return [
+                part.strip().strip("\"'")
+                for part in joined.split(",")
+                if part.strip().strip("\"'")
+            ]
         return value
     if value is None:
         return default
@@ -79,7 +97,12 @@ def _as_list(name: str, default: list[Any]) -> list[Any]:
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError:
-            return [part.strip() for part in value.split(",") if part.strip()]
+            value = value.strip("[]")
+            return [
+                part.strip().strip("\"'")
+                for part in value.split(",")
+                if part.strip().strip("\"'")
+            ]
         return parsed if isinstance(parsed, list) else default
     return default
 
@@ -97,11 +120,12 @@ def _clean_title(value: str | None) -> str:
 GROUPS = [int(group_id) for group_id in _as_list("morningpaper_groups", [])]
 HOUR = _as_int("morningpaper_hour", 8)
 MINUTE = _as_int("morningpaper_minute", 30)
-TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
+TOP_N = max(1, min(_as_int("morningpaper_top_n", 10), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["zaobao", "ai"])
+    for source in _as_list("morningpaper_sources", ["baidu", "ai"])
 ]
+TRANSLATE_AI = _as_bool("morningpaper_translate_ai", True)
 
 HEADERS = {
     "User-Agent": (
@@ -139,10 +163,6 @@ AI_KEYWORDS = (
 )
 
 RSS_SOURCES: dict[str, dict[str, Any]] = {
-    "zaobao": {
-        "name": "联合早报",
-        "urls": ["https://hub.slarker.me/zaobao/realtime/china"],
-    },
     "ai": {
         "name": "AI前沿",
         "urls": [
@@ -152,6 +172,7 @@ RSS_SOURCES: dict[str, dict[str, Any]] = {
             "https://hnrss.org/newest?q=AI",
         ],
         "keywords": AI_KEYWORDS,
+        "translate": True,
     },
     "ithome": {
         "name": "IT之家",
@@ -163,6 +184,74 @@ RSS_SOURCES: dict[str, dict[str, Any]] = {
         "keywords": AI_KEYWORDS,
     },
 }
+
+
+def _is_pinned_baidu_item(item: dict[str, Any]) -> bool:
+    hot_tag = str(item.get("hotTag") or item.get("tag") or "").strip()
+    return bool(
+        item.get("isTop")
+        or item.get("is_top")
+        or item.get("top")
+        or hot_tag == "置顶"
+    )
+
+
+def _baidu_item_url(title: str, item: dict[str, Any]) -> str | None:
+    for key in ("url", "appUrl", "rawUrl", "wapUrl"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"https://www.baidu.com/s?wd={quote(title)}"
+
+
+def _extract_baidu_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        if value.get("word") or value.get("query"):
+            return [value]
+        items: list[dict[str, Any]] = []
+        for child in value.values():
+            items.extend(_extract_baidu_items(child))
+        return items
+    if isinstance(value, list):
+        items: list[dict[str, Any]] = []
+        for child in value:
+            items.extend(_extract_baidu_items(child))
+        return items
+    return []
+
+
+async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
+    url = "https://top.baidu.com/api/board?platform=wise&tab=realtime"
+    try:
+        response = await client.get(
+            url,
+            headers={
+                **HEADERS,
+                "Accept": "application/json, text/plain, */*",
+                "Referer": "https://top.baidu.com/board?tab=realtime",
+            },
+            timeout=12,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        raw_items = _extract_baidu_items(payload.get("data", {}).get("cards", []))
+
+        items: list[HotItem] = []
+        for raw_item in raw_items:
+            if _is_pinned_baidu_item(raw_item):
+                continue
+            title = _clean_title(str(raw_item.get("word") or raw_item.get("query") or ""))
+            if not title:
+                continue
+            score = raw_item.get("hotScore") or raw_item.get("hotValue")
+            extra = f"热度 {score}" if score else None
+            items.append(HotItem(title=title, url=_baidu_item_url(title, raw_item), extra=extra))
+            if len(items) >= limit:
+                break
+        return SourceResult("百度热榜", items, None if items else "百度热榜无可用条目")
+    except Exception as exc:
+        return SourceResult("百度热榜", [], f"{type(exc).__name__}: {exc}")
 
 
 def _strip_namespace(tag: str) -> str:
@@ -214,6 +303,43 @@ def _parse_feed(text: str, keywords: tuple[str, ...] | None = None) -> list[HotI
     return items
 
 
+def _mostly_english(text: str) -> bool:
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return False
+    letters = re.findall(r"[A-Za-z]", text)
+    return len(letters) >= 8
+
+
+async def _translate_to_zh(client: httpx.AsyncClient, text: str) -> str:
+    if not TRANSLATE_AI or not _mostly_english(text):
+        return text
+    try:
+        response = await client.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text[:450], "langpair": "en|zh-CN"},
+            headers=HEADERS,
+            timeout=8,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        translated = _clean_title(payload.get("responseData", {}).get("translatedText"))
+        return translated if translated else text
+    except Exception as exc:
+        logger.debug(f"AI 标题翻译失败：{type(exc).__name__}: {exc}")
+        return text
+
+
+async def _translate_items_to_zh(client: httpx.AsyncClient, items: list[HotItem]) -> None:
+    translated = await asyncio.gather(
+        *(_translate_to_zh(client, item.title) for item in items),
+        return_exceptions=True,
+    )
+    for item, title in zip(items, translated):
+        if isinstance(title, str):
+            item.title = title
+
+
 async def fetch_rss_source(client: httpx.AsyncClient, source: str, limit: int) -> SourceResult:
     config = RSS_SOURCES[source]
     urls = [str(url) for url in config["urls"]]
@@ -238,6 +364,8 @@ async def fetch_rss_source(client: httpx.AsyncClient, source: str, limit: int) -
             seen.add(item.title)
             items.append(item)
             if len(items) >= limit:
+                if config.get("translate"):
+                    await _translate_items_to_zh(client, items)
                 return SourceResult(str(config["name"]), items)
     for parsed in parsed_by_feed:
         for item in parsed[per_feed_limit:]:
@@ -246,20 +374,25 @@ async def fetch_rss_source(client: httpx.AsyncClient, source: str, limit: int) -
             seen.add(item.title)
             items.append(item)
             if len(items) >= limit:
+                if config.get("translate"):
+                    await _translate_items_to_zh(client, items)
                 return SourceResult(str(config["name"]), items)
 
     if items:
+        if config.get("translate"):
+            await _translate_items_to_zh(client, items)
         return SourceResult(str(config["name"]), items)
     return SourceResult(str(config["name"]), [], "; ".join(errors) or "RSS 无可用条目")
 
 
 async def collect_sources() -> list[SourceResult]:
     async with httpx.AsyncClient() as client:
-        tasks = [
-            fetch_rss_source(client, source, TOP_N)
-            for source in SOURCES
-            if source in RSS_SOURCES
-        ]
+        tasks = []
+        for source in SOURCES:
+            if source == "baidu":
+                tasks.append(fetch_baidu(client, TOP_N))
+            elif source in RSS_SOURCES:
+                tasks.append(fetch_rss_source(client, source, TOP_N))
         if not tasks:
             return []
         return await asyncio.gather(*tasks)
