@@ -4,12 +4,10 @@ import asyncio
 import html
 import json
 import re
-import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 from nonebot import get_bot, get_driver, on_regex, require
@@ -26,7 +24,7 @@ except Exception:
 
 __plugin_meta__ = PluginMetadata(
     name="nonebot-plugin-morningpaper",
-    description="群聊早报，定时推送知乎、百度、贴吧、IT之家、InfoQ 热点摘要。",
+    description="群聊早报，定时推送联合早报和 AI 前沿 RSS 摘要。",
     usage="早报：立即查看早报\n发送早报：超级用户立即推送到当前群或配置群",
     type="application",
     homepage="https://github.com/PeachCoda/nonebot-plugin-morningpaper",
@@ -96,38 +94,14 @@ def _clean_title(value: str | None) -> str:
     return title.strip()
 
 
-def _first_text(raw: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = raw.get(key)
-        if value is None:
-            continue
-        text = _clean_title(str(value))
-        if text:
-            return text
-    return ""
-
-
-def _list_from_payload(data: Any) -> list[Any]:
-    if isinstance(data, list):
-        return data
-    if not isinstance(data, dict):
-        return []
-    for key in ("List", "list", "Items", "items", "Data", "data"):
-        value = data.get(key)
-        if isinstance(value, list):
-            return value
-    return []
-
-
 GROUPS = [int(group_id) for group_id in _as_list("morningpaper_groups", [])]
 HOUR = _as_int("morningpaper_hour", 8)
 MINUTE = _as_int("morningpaper_minute", 30)
 TOP_N = max(1, min(_as_int("morningpaper_top_n", 5), 10))
 SOURCES = [
     str(source).lower()
-    for source in _as_list("morningpaper_sources", ["baidu", "tieba", "ithome"])
+    for source in _as_list("morningpaper_sources", ["zaobao", "ai"])
 ]
-ZHIHU_ACCESS_SECRET = str(_get_config("morningpaper_zhihu_access_secret", "")).strip()
 
 HEADERS = {
     "User-Agent": (
@@ -164,161 +138,127 @@ AI_KEYWORDS = (
     "英伟达",
 )
 
+RSS_SOURCES: dict[str, dict[str, Any]] = {
+    "zaobao": {
+        "name": "联合早报",
+        "urls": ["https://hub.slarker.me/zaobao/realtime/china"],
+    },
+    "ai": {
+        "name": "AI前沿",
+        "urls": [
+            "https://www.infoq.cn/feed",
+            "https://openai.com/blog/rss.xml",
+            "https://blog.google/technology/ai/rss/",
+            "https://hnrss.org/newest?q=AI",
+        ],
+        "keywords": AI_KEYWORDS,
+    },
+    "ithome": {
+        "name": "IT之家",
+        "urls": ["https://www.ithome.com/rss/"],
+    },
+    "infoq": {
+        "name": "AI前沿",
+        "urls": ["https://www.infoq.cn/feed"],
+        "keywords": AI_KEYWORDS,
+    },
+}
 
-async def _get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
-    response = await client.get(url, timeout=10, follow_redirects=True, **kwargs)
-    response.raise_for_status()
-    return response.json()
+
+def _strip_namespace(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
 
 
-async def fetch_zhihu(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    if not ZHIHU_ACCESS_SECRET:
-        return SourceResult("知乎", [], "MORNINGPAPER_ZHIHU_ACCESS_SECRET 未配置")
-    try:
-        payload = await _get_json(
-            client,
-            "https://developer.zhihu.com/api/v1/content/hot_list",
-            params={"Limit": limit, "Offset": 0},
-            headers={
-                **HEADERS,
-                "Authorization": f"Bearer {ZHIHU_ACCESS_SECRET}",
-                "X-Request-Timestamp": str(int(time.time())),
-                "Content-Type": "application/json",
-            },
-        )
-        data = payload.get("Data")
-        raw_items = _list_from_payload(data)
-        if not raw_items:
-            return SourceResult("知乎", [], str(payload.get("Message") or "接口未返回热榜数据"))
-        items: list[HotItem] = []
-        for raw in raw_items:
-            if not isinstance(raw, dict):
+def _child_text(element: ET.Element, *names: str) -> str:
+    for child in element:
+        if _strip_namespace(child.tag) in names and child.text:
+            return _clean_title(child.text)
+    return ""
+
+
+def _child_link(element: ET.Element) -> str | None:
+    for child in element:
+        if _strip_namespace(child.tag) != "link":
+            continue
+        href = child.attrib.get("href")
+        if href:
+            return href.strip()
+        if child.text:
+            return child.text.strip()
+    return None
+
+
+def _feed_entries(root: ET.Element) -> list[ET.Element]:
+    rss_items = root.findall("./channel/item")
+    if rss_items:
+        return rss_items
+    return [element for element in root.iter() if _strip_namespace(element.tag) == "entry"]
+
+
+def _parse_feed(text: str, keywords: tuple[str, ...] | None = None) -> list[HotItem]:
+    root = ET.fromstring(text)
+    items: list[HotItem] = []
+    seen: set[str] = set()
+    for entry in _feed_entries(root):
+        title = _child_text(entry, "title")
+        if not title or title in seen:
+            continue
+        description = _child_text(entry, "description", "summary", "content")
+        description = _clean_title(re.sub(r"<[^>]+>", "", description))
+        if keywords:
+            text_for_filter = f"{title}\n{description}".lower()
+            if not any(keyword.lower() in text_for_filter for keyword in keywords):
                 continue
-            title = _first_text(
-                raw,
-                (
-                    "Title",
-                    "title",
-                    "QuestionTitle",
-                    "question_title",
-                    "Name",
-                    "name",
-                    "Excerpt",
-                    "excerpt",
-                ),
-            )
-            if not title:
+        seen.add(title)
+        items.append(HotItem(title=title, url=_child_link(entry)))
+    return items
+
+
+async def fetch_rss_source(client: httpx.AsyncClient, source: str, limit: int) -> SourceResult:
+    config = RSS_SOURCES[source]
+    urls = [str(url) for url in config["urls"]]
+    keywords = config.get("keywords")
+    per_feed_limit = limit if len(urls) == 1 else 2
+    parsed_by_feed: list[list[HotItem]] = []
+    errors: list[str] = []
+    for url in urls:
+        try:
+            response = await client.get(url, headers=HEADERS, timeout=12, follow_redirects=True)
+            response.raise_for_status()
+            parsed_by_feed.append(_parse_feed(response.text, keywords))
+        except Exception as exc:
+            errors.append(f"{url}: {type(exc).__name__}")
+
+    items: list[HotItem] = []
+    seen: set[str] = set()
+    for parsed in parsed_by_feed:
+        for item in parsed[:per_feed_limit]:
+            if item.title in seen:
                 continue
-            extra = _first_text(raw, ("HotValue", "hot_value", "Score", "score", "Metrics", "metrics")) or None
-            url = _first_text(raw, ("Url", "url", "Link", "link"))
-            items.append(HotItem(title=title, url=url or None, extra=extra))
+            seen.add(item.title)
+            items.append(item)
             if len(items) >= limit:
-                break
-        return SourceResult("知乎", items)
-    except Exception as exc:
-        return SourceResult("知乎", [], f"{type(exc).__name__}: {exc}")
-
-
-async def fetch_baidu(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    try:
-        payload = await _get_json(
-            client,
-            "https://top.baidu.com/api/board?platform=wise&tab=realtime",
-            headers={**HEADERS, "Referer": "https://top.baidu.com/board?tab=realtime"},
-        )
-        content = payload.get("data", {}).get("cards", [{}])[0].get("content", [])
-        raw_items = content[0].get("content", []) if content else []
-        items: list[HotItem] = []
-        for raw in raw_items:
-            title = _clean_title(str(raw.get("word") or raw.get("query") or ""))
-            if not title:
+                return SourceResult(str(config["name"]), items)
+    for parsed in parsed_by_feed:
+        for item in parsed[per_feed_limit:]:
+            if item.title in seen:
                 continue
-            url = html.unescape(str(raw.get("url") or "").strip()) or f"https://www.baidu.com/s?wd={quote(title)}"
-            extra = str(raw.get("hotScore") or raw.get("score") or "").strip() or None
-            items.append(HotItem(title=title, url=url, extra=extra))
+            seen.add(item.title)
+            items.append(item)
             if len(items) >= limit:
-                break
-        return SourceResult("百度", items)
-    except Exception as exc:
-        return SourceResult("百度", [], f"{type(exc).__name__}: {exc}")
+                return SourceResult(str(config["name"]), items)
 
-
-async def fetch_tieba(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    try:
-        response = await client.get(
-            "http://tieba.baidu.com/hottopic/browse/topicList?res_type=1",
-            headers={**HEADERS, "Referer": "http://tieba.baidu.com/"},
-            timeout=8,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        items: list[HotItem] = []
-        for raw_title in re.findall(
-            r'<a[^>]+class="[^"]*topic[^"]*"[^>]*>(.*?)</a>',
-            response.text,
-            flags=re.S,
-        ):
-            title = _clean_title(re.sub(r"<[^>]+>", "", raw_title))
-            if title:
-                items.append(HotItem(title=title))
-            if len(items) >= limit:
-                break
-        return SourceResult("贴吧", items)
-    except Exception as exc:
-        return SourceResult("贴吧", [], f"{type(exc).__name__}: {exc}")
-
-
-async def fetch_ithome(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    try:
-        response = await client.get("https://www.ithome.com/rss/", headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        root = ET.fromstring(response.text)
-        items: list[HotItem] = []
-        for item in root.findall("./channel/item")[:limit]:
-            title = _clean_title(item.findtext("title"))
-            url = (item.findtext("link") or "").strip() or None
-            if title:
-                items.append(HotItem(title=title, url=url))
-        return SourceResult("IT之家", items)
-    except Exception as exc:
-        return SourceResult("IT之家", [], f"{type(exc).__name__}: {exc}")
-
-
-async def fetch_infoq(client: httpx.AsyncClient, limit: int) -> SourceResult:
-    try:
-        response = await client.get("https://www.infoq.cn/feed", headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        root = ET.fromstring(response.text)
-        items: list[HotItem] = []
-        for item in root.findall("./channel/item"):
-            title = _clean_title(item.findtext("title"))
-            description = _clean_title(re.sub(r"<[^>]+>", "", item.findtext("description") or ""))
-            text = f"{title}\n{description}"
-            if not any(keyword.lower() in text.lower() for keyword in AI_KEYWORDS):
-                continue
-            url = (item.findtext("link") or "").strip() or None
-            if title:
-                items.append(HotItem(title=title, url=url))
-            if len(items) >= limit:
-                break
-        return SourceResult("AI前沿", items)
-    except Exception as exc:
-        return SourceResult("AI前沿", [], f"{type(exc).__name__}: {exc}")
+    if items:
+        return SourceResult(str(config["name"]), items)
+    return SourceResult(str(config["name"]), [], "; ".join(errors) or "RSS 无可用条目")
 
 
 async def collect_sources() -> list[SourceResult]:
-    fetchers = {
-        "zhihu": fetch_zhihu,
-        "baidu": fetch_baidu,
-        "tieba": fetch_tieba,
-        "ithome": fetch_ithome,
-        "infoq": fetch_infoq,
-    }
     async with httpx.AsyncClient() as client:
         tasks = [
-            fetchers[source](client, TOP_N)
+            fetch_rss_source(client, source, TOP_N)
             for source in SOURCES
-            if source in fetchers
+            if source in RSS_SOURCES
         ]
         if not tasks:
             return []

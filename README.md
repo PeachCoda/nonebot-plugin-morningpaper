@@ -1,6 +1,6 @@
 # nonebot-plugin-morningpaper
 
-NoneBot2 群聊早报插件，定时推送知乎、百度、贴吧、IT之家、InfoQ 热点摘要。
+NoneBot2 群聊早报插件，定时推送联合早报和 AI 前沿 RSS 摘要。
 
 ## 功能
 
@@ -16,14 +16,12 @@ MORNINGPAPER_GROUPS=[142979214]
 MORNINGPAPER_HOUR=8
 MORNINGPAPER_MINUTE=30
 MORNINGPAPER_TOP_N=5
-MORNINGPAPER_SOURCES=["baidu","tieba","ithome"]
-MORNINGPAPER_ZHIHU_ACCESS_SECRET=
+MORNINGPAPER_SOURCES=["zaobao","ai"]
 APSCHEDULER_CONFIG='{"apscheduler.timezone":"Asia/Shanghai"}'
 ```
 
-`MORNINGPAPER_SOURCES` 可选：`zhihu`、`baidu`、`tieba`、`ithome`、`infoq`。
-`infoq` 会筛选 InfoQ 中文站的 AI 相关内容。
-启用 `zhihu` 需要配置知乎开放平台 Access Secret。
+`MORNINGPAPER_SOURCES` 可选：`zaobao`、`ai`、`ithome`、`infoq`。
+`zaobao` 使用 RSSHub 联合早报路由，`ai` 聚合 OpenAI、Google AI、Hacker News AI 与 InfoQ 中文 RSS。
 
 ## 安装
 
